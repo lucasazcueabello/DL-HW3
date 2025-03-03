@@ -9,10 +9,35 @@ INPUT_STD = [0.2064, 0.1944, 0.2252]
 
 
 class Classifier(nn.Module):
+    class Block(torch.nn.Module):
+        def __init__(self, in_channels, out_channels, stride):
+            super().__init__()
+            kernel_size = 3
+            padding = (kernel_size - 1) // 2
+
+            self.c1 = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+            self.c2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size, 1, padding)
+            self.c3 = torch.nn.Conv2d(out_channels, out_channels, kernel_size, 1, padding)
+            self.relu = torch.nn.ReLU()
+            self.batch_norm = torch.nn.BatchNorm2d(out_channels)
+            self.dropout = torch.nn.Dropout(p=0.1)
+
+            if in_channels != out_channels or stride != 1:
+                self.residual = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, padding=0)
+            else:
+                self.residual = nn.Identity()
+
+        def forward(self, x):
+            x1 = self.dropout(self.relu(self.batch_norm(self.c1(x))))
+            x1 = self.dropout(self.relu(self.batch_norm(self.c2(x1))))
+            x1 = self.dropout(self.relu(self.batch_norm(self.c3(x1))))
+            return x1 + self.residual(x)
+
     def __init__(
         self,
         in_channels: int = 3,
         num_classes: int = 6,
+        num_blocks: int = 6
     ):
         """
         A convolutional network for image classification.
@@ -26,8 +51,19 @@ class Classifier(nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
-        # TODO: implement
-        pass
+        cnn_layers = [
+            torch.nn.Conv2d(3, in_channels, kernel_size=7, stride=2, padding=3),
+            torch.nn.ReLU(),
+        ]
+        c1 = in_channels
+        for _ in range(num_blocks):
+            c2 = c1 * 2
+            cnn_layers.append(self.Block(c1, c2, stride=2))
+            c1 = c2
+        cnn_layers.append(torch.nn.Conv2d(c1, num_classes, kernel_size=1))
+        cnn_layers.append(torch.nn.AdaptiveAvgPool2d(1))
+        self.network = torch.nn.Sequential(*cnn_layers)
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -41,9 +77,9 @@ class Classifier(nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        logits = torch.randn(x.size(0), 6)
+        logits = self.network(z)
 
-        return logits
+        return logits.squeeze()
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -58,6 +94,7 @@ class Classifier(nn.Module):
             pred (torch.LongTensor): class labels {0, 1, ..., 5} with shape (b, h, w)
         """
         return self(x).argmax(dim=1)
+
 
 
 class Detector(torch.nn.Module):
@@ -123,6 +160,11 @@ class Detector(torch.nn.Module):
         depth = raw_depth
 
         return pred, depth
+    
+class Backbone(torch.nn.Module):
+    def __init__(self):
+        super(Backbone, self).__init__()
+        
 
 
 MODEL_FACTORY = {
