@@ -102,6 +102,10 @@ class Detector(torch.nn.Module):
         self,
         in_channels: int = 3,
         num_classes: int = 3,
+        num_blocks: int = 3,
+        depth: int = 4,
+        wf: int = 4,
+        padding: bool = True,
     ):
         """
         A single model that performs segmentation and depth regression
@@ -115,7 +119,29 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN))
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
-        # TODO: implement
+        self.padding = padding
+        self.depth = depth
+        prev_channels = in_channels
+        self.down_path = nn.ModuleList()
+        for i in range(depth):
+            self.down_path.append(
+                DownConvBlock(prev_channels, 2 ** (wf + i), padding, num_blocks, stride=2)
+            )
+            prev_channels = 2 ** (wf + i)
+
+        prev_channels = 2 * prev_channels
+
+        self.up_path = nn.ModuleList()
+        for i in reversed(range(depth)):
+            self.up_path.append(
+                UpConvBlock(prev_channels, 2 ** (wf + i-1), padding, num_blocks)
+            )
+            prev_channels = 2 ** (wf + i)
+
+        self.segmentation = nn.Conv2d(int(prev_channels/2), num_classes, kernel_size=1)
+        self.estimation = nn.Conv2d(int(prev_channels/2), 1, kernel_size=1)
+        #self.maxPool = nn.MaxPool2d(kernel_size=2)
+
         pass
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -133,12 +159,24 @@ class Detector(torch.nn.Module):
         """
         # optional: normalizes the input
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
+        blocks = []
+        for i, down in enumerate(self.down_path):
+            z = down(z)
+            if i != len(self.down_path) - 1:
+                blocks.append(z)
+                #z = self.maxPool(z)
+        
 
-        # TODO: replace with actual forward pass
-        logits = torch.randn(x.size(0), 3, x.size(2), x.size(3))
-        raw_depth = torch.rand(x.size(0), x.size(2), x.size(3))
+        for i, up in enumerate(self.up_path):
+            if i > 0:
+                # For layers with skip connections, pass the corresponding bridge tensor
+                z = up(z, blocks[-i])  # Pass the bridge tensor
+            else:
+                # For layers without skip connections, pass `None` or a zeros tensor
+                z = up(z, None)  # No bridge tensor
 
-        return logits, raw_depth
+
+        return self.segmentation(z), self.estimation(z).squeeze()
 
     def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -160,12 +198,53 @@ class Detector(torch.nn.Module):
         depth = raw_depth
 
         return pred, depth
-    
-class Backbone(torch.nn.Module):
-    def __init__(self):
-        super(Backbone, self).__init__()
-        
 
+class DownConvBlock(nn.Module):
+    def __init__(self, in_size, out_size, padding, num_blocks = 1, stride=2):
+        super(DownConvBlock, self).__init__()
+        block = []
+
+        block.append(nn.Conv2d(in_size, out_size, kernel_size=3, stride=stride, padding=int(padding)))
+        block.append(nn.Sigmoid())
+        block.append(nn.BatchNorm2d(out_size))
+        for i in range(num_blocks-1):
+            block.append(nn.Conv2d(out_size, out_size, kernel_size=3, padding=int(padding)))
+            block.append(nn.Sigmoid())
+            block.append(nn.BatchNorm2d(out_size))
+
+        self.block = nn.Sequential(*block)
+
+    def forward(self, x):
+        out = self.block(x)
+        return out
+    
+class UpConvBlock(nn.Module):
+    def __init__(self, in_size, out_size, padding, num_blocks = 1):
+        super(UpConvBlock, self).__init__()
+        self.up = nn.ConvTranspose2d(in_size, out_size, kernel_size=2, stride=2)
+        
+        self.conv_block = DownConvBlock(out_size, out_size, padding, num_blocks, stride=1)
+
+    def center_crop(self, layer, target_size):
+        _, _, layer_height, layer_width = layer.size()
+        diff_y = (layer_height - target_size[0]) // 2
+        diff_x = (layer_width - target_size[1]) // 2
+        return layer[
+            :, :, diff_y : (diff_y + target_size[0]), diff_x : (diff_x + target_size[1])
+        ]
+
+    def forward(self, x, bridge=None):
+        if bridge is not None:
+            # Otherwise, crop the bridge to match the shape of `up`
+            crop1 = self.center_crop(bridge, x.shape[2:])
+            x = torch.cat([x, crop1], dim=1)
+        else:
+            crop1 = torch.zeros_like(x)
+            x = torch.cat([x, crop1], dim=1)
+        out = self.up(x)
+        out = self.conv_block(out)
+        return out
+    
 
 MODEL_FACTORY = {
     "classifier": Classifier,

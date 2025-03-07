@@ -40,6 +40,7 @@ def train(
     print(model)
     model = model.to(device)
     model.train()
+    print(model.device)
 
     train_data = load_data("classification_data/train", shuffle=True, transform_pipeline="aug", batch_size=batch_size, num_workers=2)
     val_data = load_data("classification_data/val", shuffle=False)
@@ -129,7 +130,7 @@ if __name__ == "__main__":
     parser.add_argument("--exp_dir", type=str, default="logs")
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--num_epoch", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=2024)
     # optional: additional model hyperparamters
