@@ -18,7 +18,7 @@ class Classifier(nn.Module):
             self.c1 = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
             self.c2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size, 1, padding)
             self.c3 = torch.nn.Conv2d(out_channels, out_channels, kernel_size, 1, padding)
-            self.relu = torch.nn.ReLU()
+            self.gelu = torch.nn.GELU()
             self.batch_norm = torch.nn.BatchNorm2d(out_channels)
             self.dropout = torch.nn.Dropout(p=0.1)
 
@@ -28,9 +28,9 @@ class Classifier(nn.Module):
                 self.residual = nn.Identity()
 
         def forward(self, x):
-            x1 = self.dropout(self.relu(self.batch_norm(self.c1(x))))
-            x1 = self.dropout(self.relu(self.batch_norm(self.c2(x1))))
-            x1 = self.dropout(self.relu(self.batch_norm(self.c3(x1))))
+            x1 = self.dropout(self.gelu(self.batch_norm(self.c1(x))))
+            x1 = self.dropout(self.gelu(self.batch_norm(self.c2(x1))))
+            x1 = self.dropout(self.gelu(self.batch_norm(self.c3(x1))))
             return x1 + self.residual(x)
 
     def __init__(
@@ -52,8 +52,8 @@ class Classifier(nn.Module):
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
         cnn_layers = [
-            torch.nn.Conv2d(3, in_channels, kernel_size=7, stride=2, padding=3),
-            torch.nn.ReLU(),
+            #torch.nn.Conv2d(3, in_channels, kernel_size=7, stride=2, padding=3),
+            #torch.nn.GELU(),
         ]
         c1 = in_channels
         for _ in range(num_blocks):
@@ -102,7 +102,7 @@ class Detector(torch.nn.Module):
         self,
         in_channels: int = 3,
         num_classes: int = 3,
-        num_blocks: int = 3,
+        num_blocks: int = 4,
         depth: int = 4,
         wf: int = 4,
         padding: bool = True,
@@ -125,7 +125,7 @@ class Detector(torch.nn.Module):
         self.down_path = nn.ModuleList()
         for i in range(depth):
             self.down_path.append(
-                DownConvBlock(prev_channels, 2 ** (wf + i), padding, num_blocks, stride=2)
+                DownConvBlock(prev_channels, 2 ** (wf + i), padding, num_blocks, stride=2, useSigmoid=False)
             )
             prev_channels = 2 ** (wf + i)
 
@@ -200,16 +200,22 @@ class Detector(torch.nn.Module):
         return pred, depth
 
 class DownConvBlock(nn.Module):
-    def __init__(self, in_size, out_size, padding, num_blocks = 1, stride=2):
+    def __init__(self, in_size, out_size, padding, num_blocks = 1, stride=2, useSigmoid = False):
         super(DownConvBlock, self).__init__()
         block = []
 
         block.append(nn.Conv2d(in_size, out_size, kernel_size=3, stride=stride, padding=int(padding)))
-        block.append(nn.Sigmoid())
+        if useSigmoid:
+            block.append(nn.Sigmoid())
+        else:
+            block.append(nn.ReLU())
         block.append(nn.BatchNorm2d(out_size))
         for i in range(num_blocks-1):
             block.append(nn.Conv2d(out_size, out_size, kernel_size=3, padding=int(padding)))
-            block.append(nn.Sigmoid())
+            if useSigmoid:
+                block.append(nn.Sigmoid())
+            else:
+                block.append(nn.ReLU())
             block.append(nn.BatchNorm2d(out_size))
 
         self.block = nn.Sequential(*block)
@@ -223,7 +229,7 @@ class UpConvBlock(nn.Module):
         super(UpConvBlock, self).__init__()
         self.up = nn.ConvTranspose2d(in_size, out_size, kernel_size=2, stride=2)
         
-        self.conv_block = DownConvBlock(out_size, out_size, padding, num_blocks, stride=1)
+        self.conv_block = DownConvBlock(out_size, out_size, padding, num_blocks, stride=1, useSigmoid=True)
 
     def center_crop(self, layer, target_size):
         _, _, layer_height, layer_width = layer.size()
